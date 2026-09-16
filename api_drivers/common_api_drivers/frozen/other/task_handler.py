@@ -57,7 +57,7 @@ class TaskHandler(object):
             self._task_handler_ref = self._task_handler
             self.max_scheduled = max_scheduled
 
-            self._start_time = time.ticks_ms()  # NOQA
+            self._last_tick = time.ticks_ms()  # NOQA
             self._timer.init(
                 mode=Timer.PERIODIC,
                 period=self.duration,
@@ -126,16 +126,8 @@ class TaskHandler(object):
                         else:
                             sys.print_exception(err)  # NOQA
 
-                stop_time = time.ticks_ms()  # NOQA
-
-                ticks_diff = time.ticks_diff(stop_time, self._start_time)  # NOQA
-                self._start_time = stop_time
-                lv.tick_inc(ticks_diff)
-
                 if run_update:
                     lv.task_handler()
-                    start_time = time.ticks_ms()  # NOQA
-
                     for cb, evt, data in self._callbacks:
                         if not evt & TASK_HANDLER_FINISHED:
                             continue
@@ -151,10 +143,6 @@ class TaskHandler(object):
                             else:
                                 sys.print_exception(err)  # NOQA
 
-                    stop_time = time.ticks_ms()  # NOQA
-                    ticks_diff = time.ticks_diff(stop_time, start_time)  # NOQA
-                    lv.tick_inc(ticks_diff)
-
                 self._running = False
 
         except Exception as e:
@@ -164,7 +152,13 @@ class TaskHandler(object):
                 self.exception_hook(e)
 
     def _timer_cb(self, _):
-        lv.tick_inc(self.duration)
+        # The only place LVGL time advances. Feed it the real elapsed time
+        # rather than the nominal period: timer callbacks are delivered via the
+        # scheduler and coalesce or drop under load, and _task_handler must not
+        # add ticks of its own or LVGL time runs ~2x faster than wall clock.
+        now = time.ticks_ms()  # NOQA
+        lv.tick_inc(time.ticks_diff(now, self._last_tick))  # NOQA
+        self._last_tick = now
         if self._running:
             return
 
