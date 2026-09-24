@@ -612,7 +612,9 @@ def build_commands(_, extra_args, script_dir, lv_cflags, ___):
         f'LV_CFLAGS="{lv_cflags}"',
         f'LV_PORT=esp32',
         f'BOARD={board}',
-        'USER_C_MODULES=../../../../../ext_mod/micropython.cmake'
+        # absolute: the relative form resolves against lib/micropython's real
+        # location, which is a different tree when lib/ is symlinked (git worktrees)
+        f'USER_C_MODULES={SCRIPT_DIR}/ext_mod/micropython.cmake'
     ])
 
     # esp_cmd.extend(extra_args)
