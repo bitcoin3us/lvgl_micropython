@@ -1040,6 +1040,101 @@ if not os.path.exists('micropy_updates/originals/esp32'):
     os.makedirs('micropy_updates/originals/esp32')
 
 
+def update_mpy_tool():
+    # Frozen native code (@micropython.native / viper) is emitted by
+    # mpy-tool.py as byte arrays placed in a code section, with aligned(2)
+    # on RISC-V. The RISC-V assembler never pads a 2-byte alignment inside
+    # a code section (it assumes only instructions live there), so the
+    # arrays are packed back to back and the ones following an odd-sized
+    # array start at an odd address: jalr clears the low bit and the first
+    # call executes garbage (illegal instruction). A 4-byte alignment is
+    # padded, provided the file is assembled without relaxation (see
+    # update_frozen_content_relax), as the relaxation-mode padding cannot
+    # cover odd sizes ("3 bytes required for alignment").
+    mpy_tool_path = 'lib/micropython/tools/mpy-tool.py'
+
+    with open(mpy_tool_path, 'r') as f:
+        data = f.read()
+
+    old = (
+        '        if config.native_arch in (\n'
+        '            MP_NATIVE_ARCH_ARMV6,\n'
+        '            MP_NATIVE_ARCH_XTENSA,\n'
+        '            MP_NATIVE_ARCH_XTENSAWIN,\n'
+        '        ):\n'
+        '            # ARMV6 or Xtensa -- four byte align.\n'
+        '            self.fun_data_attributes += " __attribute__ ((aligned (4)))"\n'
+        '        elif (\n'
+        '            MP_NATIVE_ARCH_ARMV6M <= config.native_arch <= MP_NATIVE_ARCH_ARMV7EMDP\n'
+        '        ) or MP_NATIVE_ARCH_RV32IMC <= config.native_arch <= MP_NATIVE_ARCH_RV64IMC:\n'
+        '            # ARMVxxM or RV{32,64}IMC -- two byte align.\n'
+        '            self.fun_data_attributes += " __attribute__ ((aligned (2)))"\n'
+    )
+    new = (
+        '        if config.native_arch in (\n'
+        '            MP_NATIVE_ARCH_ARMV6,\n'
+        '            MP_NATIVE_ARCH_XTENSA,\n'
+        '            MP_NATIVE_ARCH_XTENSAWIN,\n'
+        '            MP_NATIVE_ARCH_RV32IMC,\n'
+        '            MP_NATIVE_ARCH_RV64IMC,\n'
+        '        ):\n'
+        '            # ARMV6, Xtensa or RISC-V -- four byte align (RISC-V needs only\n'
+        '            # two, but the assembler never pads a 2-byte alignment inside a\n'
+        '            # code section).\n'
+        '            self.fun_data_attributes += " __attribute__ ((aligned (4)))"\n'
+        '        elif (\n'
+        '            MP_NATIVE_ARCH_ARMV6M <= config.native_arch <= MP_NATIVE_ARCH_ARMV7EMDP\n'
+        '        ):\n'
+        '            # ARMVxxM -- two byte align.\n'
+        '            self.fun_data_attributes += " __attribute__ ((aligned (2)))"\n'
+    )
+
+    if new in data:
+        return
+
+    if old not in data:
+        raise RuntimeError('mpy-tool.py: native code alignment block not found, update update_mpy_tool()')
+
+    with open(mpy_tool_path, 'w') as f:
+        f.write(data.replace(old, new, 1))
+
+
+def update_frozen_content_relax():
+    # Frozen native code (@micropython.native / viper) is emitted by
+    # mpy-tool.py as byte arrays placed in a code section with a 2-byte
+    # alignment attribute. With linker relaxation on (the default) the
+    # RISC-V assembler turns that 2-byte .align in a code section into a
+    # no-op, so the arrays are packed back to back and functions whose
+    # predecessor has an odd length start at an odd address: jalr clears
+    # the low bit and the first call executes garbage (illegal instruction).
+    # Compiling frozen_content.c with -mno-relax makes the assembler pad
+    # the alignment itself; the file holds no code that could be relaxed.
+    cmake_path = 'lib/micropython/ports/esp32/esp32_common.cmake'
+
+    with open(cmake_path, 'r') as f:
+        data = f.read()
+
+    marker = 'include(${MICROPY_DIR}/py/mkrules.cmake)\n'
+    addition = (
+        marker +
+        '\n'
+        'if(CONFIG_IDF_TARGET_ARCH_RISCV)\n'
+        '    # keep the assembler from dropping the alignment of frozen native code\n'
+        '    # arrays (see builder/esp32.py update_frozen_content_relax)\n'
+        '    set_source_files_properties(${MICROPY_FROZEN_CONTENT} PROPERTIES COMPILE_OPTIONS "-mno-relax")\n'
+        'endif()\n'
+    )
+
+    if addition in data:
+        return
+
+    if marker not in data:
+        raise RuntimeError('esp32_common.cmake: mkrules.cmake include not found, update update_frozen_content_relax()')
+
+    with open(cmake_path, 'w') as f:
+        f.write(data.replace(marker, addition, 1))
+
+
 def update_mpthreadport():
     h_data = read_file('esp32', MPTHREADPORT_H_PATH)
 
@@ -1508,6 +1603,8 @@ def compile(*args):  # NOQA
 
     update_main()
     update_mpthreadport()
+    update_frozen_content_relax()
+    update_mpy_tool()
     update_panic_handler()
     update_mpconfigboard()
     update_mpconfigport()
